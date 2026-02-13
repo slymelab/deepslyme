@@ -5,11 +5,9 @@ Refactored to separate argument definition/collection from parsing/injection.
 
 import argparse
 import sys
-from dataclasses import dataclass, field
-from enum import Enum
+from dataclasses import replace
 from typing import (
     Any,
-    Callable,
     Iterable,
     List,
     Optional,
@@ -19,14 +17,10 @@ from typing import (
     get_args,
     Literal,
     Dict,
-    Tuple,
-    Set,
 )
 from slyme.context import Ref, Context
 from slyme.node.core import NODE_PYTREE_ENGINE
-
-_Missing = Enum("_Missing", ["MARK"])
-_MISSING = _Missing.MARK
+from deepslyme.context.metadata import ARG, HELP, TYPE, Arg
 
 __all__ = [
     "ARG",
@@ -36,9 +30,6 @@ __all__ = [
     "populate_parser",
     "parse_and_inject",
 ]
-
-# Metadata Key
-ARG = "node.arg"
 
 
 def _string_to_bool(v: Union[str, bool]) -> bool:
@@ -58,34 +49,6 @@ def _string_to_bool(v: Union[str, bool]) -> bool:
         )
 
 
-@dataclass
-class Arg:
-    """
-    Argument definition to be used in Ref metadata.
-    Designed to be minimal and universal, compatible with argparse, hydra, etc.
-
-    Example:
-        Ref("model.lr", metadata={ARG: Arg(default=1e-3, help="Learning rate")})
-    """
-
-    default: Any = _MISSING
-    default_factory: Union[Callable[[], Any], _Missing] = _MISSING
-    help: Optional[str] = None
-    type: Optional[Type] = None
-    choices: Optional[Iterable[Any]] = None
-    required: bool = False
-    nargs: Union[str, int, None] = None
-    aliases: List[str] = field(default_factory=list)
-    metavar: Optional[str] = None
-
-    def resolve_default(self) -> Any:
-        if self.default is not _MISSING:
-            return self.default
-        if self.default_factory is not _MISSING:
-            return self.default_factory()
-        return _MISSING
-
-
 def _infer_type(arg: Arg) -> Type:
     """
     Infer the type of the argument based on explicit definition or default value.
@@ -94,7 +57,7 @@ def _infer_type(arg: Arg) -> Type:
         return arg.type
 
     default_val = arg.resolve_default()
-    if default_val is not _MISSING and default_val is not None:
+    if not Arg.is_missing(default_val) and default_val is not None:
         return type(default_val)
 
     # Fallback: if no type info is available, assume str
@@ -128,36 +91,61 @@ def resolve_args(refs: Iterable[Ref]) -> Dict[str, Arg]:
 
     Handles conflicts:
     - If multiple Refs point to the same path, they must have compatible Arg definitions.
-    - Currently enforces strict equality for Arg definitions if they exist.
+    - Enforces strict equality for Arg definitions if they exist.
+
+    Handles merging:
+    - If Arg is missing help/type, tries to fill it from metadata[HELP] / metadata[TYPE].
     """
-    resolved: Dict[str, Arg] = {}
+    path_to_args: Dict[str, List[Arg]] = {}
+    path_to_help: Dict[str, List[str]] = {}
+    path_to_type: Dict[str, List[Any]] = {}
 
     for ref in refs:
-        if ARG not in ref.metadata:
-            continue
+        if ARG in ref.metadata:
+            arg_def = ref.metadata[ARG]
+            if not isinstance(arg_def, Arg):
+                raise TypeError(
+                    f"Invalid metadata for {ARG} in Ref '{ref.path}'. Expected Arg, got {type(arg_def)}."
+                )
+            path_to_args.setdefault(ref.path, []).append(arg_def)
 
-        arg_def = ref.metadata[ARG]
-        if not isinstance(arg_def, Arg):
-            raise TypeError(
-                f"Invalid metadata for {ARG} in Ref '{ref.path}'. Expected Arg, got {type(arg_def)}."
-            )
+        if HELP in ref.metadata:
+            path_to_help.setdefault(ref.path, []).append(ref.metadata[HELP])
 
-        path = ref.path
+        if TYPE in ref.metadata:
+            path_to_type.setdefault(ref.path, []).append(ref.metadata[TYPE])
 
-        if path in resolved:
-            existing_arg = resolved[path]
-            # Simple conflict resolution: Check for equality
-            # We can improve this to allow merging compatible definitions (e.g. one has help, other doesn't)
-            # For now, strict check.
-            if existing_arg != arg_def:
+    resolved: Dict[str, Arg] = {}
+
+    for path, args in path_to_args.items():
+        # 1. Resolve Arg Conflict (Strict Equality)
+        base_arg = args[0]
+        for other in args[1:]:
+            if base_arg != other:
                 raise ValueError(
                     f"Conflicting Arg definitions for path '{path}':\n"
-                    f"1. {existing_arg}\n"
-                    f"2. {arg_def}\n"
+                    f"1. {base_arg}\n"
+                    f"2. {other}\n"
                     "Ensure all Refs for the same path use the same Arg definition."
                 )
+
+        # 2. Merge with HELP/TYPE (if needed)
+        # Handle immutable Arg by collecting changes first
+        changes = {}
+        if base_arg.help is None and path in path_to_help:
+            # Use the first available help string
+            changes["help"] = path_to_help[path][0]
+
+        if base_arg.type is None and path in path_to_type:
+            # Use the first available type
+            changes["type"] = path_to_type[path][0]
+
+        if changes:
+            final_arg = replace(base_arg, **changes)
         else:
-            resolved[path] = arg_def
+            final_arg = base_arg
+
+        resolved[path] = final_arg
 
     return resolved
 
@@ -214,7 +202,7 @@ def _add_argument(parser: argparse.ArgumentParser, path: str, arg: Arg):
         kwargs["const"] = True
 
         # Handle default values
-        if default_val is not _MISSING:
+        if not Arg.is_missing(default_val):
             kwargs["default"] = default_val
         else:
             # Default to False if required=False and no default provided (Standard argparse behavior)
@@ -238,7 +226,7 @@ def _add_argument(parser: argparse.ArgumentParser, path: str, arg: Arg):
     elif origin in (list, tuple) or arg_type in (list, tuple):
         kwargs["nargs"] = "+" if arg.nargs is None else arg.nargs
         kwargs["type"] = args[0] if args else str  # Default to str list if generic
-        if default_val is not _MISSING:
+        if not Arg.is_missing(default_val):
             kwargs["default"] = default_val
         elif arg.required:
             kwargs["required"] = True
@@ -248,7 +236,7 @@ def _add_argument(parser: argparse.ArgumentParser, path: str, arg: Arg):
     elif origin is Literal:
         kwargs["choices"] = args
         kwargs["type"] = type(args[0])
-        if default_val is not _MISSING:
+        if not Arg.is_missing(default_val):
             kwargs["default"] = default_val
         elif arg.required:
             kwargs["required"] = True
@@ -257,7 +245,7 @@ def _add_argument(parser: argparse.ArgumentParser, path: str, arg: Arg):
     elif isinstance(arg_type, type) and issubclass(arg_type, Enum):
         kwargs["choices"] = [e.value for e in arg_type]
         kwargs["type"] = type(list(kwargs["choices"])[0])
-        if default_val is not _MISSING:
+        if not Arg.is_missing(default_val):
             kwargs["default"] = (
                 default_val.value if isinstance(default_val, Enum) else default_val
             )
@@ -271,7 +259,7 @@ def _add_argument(parser: argparse.ArgumentParser, path: str, arg: Arg):
         if arg.nargs is not None:
             kwargs["nargs"] = arg.nargs
 
-        if default_val is not _MISSING:
+        if not Arg.is_missing(default_val):
             kwargs["default"] = default_val
         elif arg.required:
             kwargs["required"] = True
