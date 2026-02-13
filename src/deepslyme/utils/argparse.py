@@ -1,5 +1,6 @@
 """
 Argument parsing utilities for slyme, designed to work with Ref metadata.
+Refactored to separate argument definition/collection from parsing/injection.
 """
 
 import argparse
@@ -19,14 +20,21 @@ from typing import (
     Literal,
     Dict,
     Tuple,
+    Set,
 )
-from slyme.utils.store import Ref, MISSING, Missing
+from slyme.context import Ref, Context
+from slyme.node.core import NODE_PYTREE_ENGINE
+
+_Missing = Enum("_Missing", ["MARK"])
+_MISSING = _Missing.MARK
 
 __all__ = [
     "ARG",
     "Arg",
+    "collect_refs",
+    "resolve_args",
     "populate_parser",
-    "parse_refs",
+    "parse_and_inject",
 ]
 
 # Metadata Key
@@ -54,12 +62,14 @@ def _string_to_bool(v: Union[str, bool]) -> bool:
 class Arg:
     """
     Argument definition to be used in Ref metadata.
-    
+    Designed to be minimal and universal, compatible with argparse, hydra, etc.
+
     Example:
         Ref("model.lr", metadata={ARG: Arg(default=1e-3, help="Learning rate")})
     """
-    default: Any = MISSING
-    default_factory: Union[Callable[[], Any], Missing] = MISSING
+
+    default: Any = _MISSING
+    default_factory: Union[Callable[[], Any], _Missing] = _MISSING
     help: Optional[str] = None
     type: Optional[Type] = None
     choices: Optional[Iterable[Any]] = None
@@ -69,56 +79,119 @@ class Arg:
     metavar: Optional[str] = None
 
     def resolve_default(self) -> Any:
-        if self.default is not MISSING:
+        if self.default is not _MISSING:
             return self.default
-        if self.default_factory is not MISSING:
+        if self.default_factory is not _MISSING:
             return self.default_factory()
-        return MISSING
+        return _MISSING
 
 
-def _infer_type(arg: Arg, ref: Ref) -> Type:
+def _infer_type(arg: Arg) -> Type:
     """
     Infer the type of the argument based on explicit definition or default value.
     """
     if arg.type is not None:
         return arg.type
-    
+
     default_val = arg.resolve_default()
-    if default_val is not MISSING and default_val is not None:
+    if default_val is not _MISSING and default_val is not None:
         return type(default_val)
-    
+
     # Fallback: if no type info is available, assume str
     return str
 
 
-def _add_argument_for_ref(parser: argparse.ArgumentParser, ref: Ref, arg: Arg):
+# --- 1. Collection & Resolution ---
+
+
+def collect_refs(element: Any) -> List[Ref]:
     """
-    Add a single Ref argument to the parser.
+    Collect all Ref objects from a node structure (NodeDef, NodeExec, etc.)
+    using the NODE_PYTREE_ENGINE.
+    """
+    refs: List[Ref] = []
+
+    def is_leaf(node: Any, _) -> bool:
+        return isinstance(node, Ref)
+
+    # We iterate using NODE_PYTREE_ENGINE which knows how to traverse Node structures
+    for _, leaf in NODE_PYTREE_ENGINE.iter_with_path(element, is_leaf=is_leaf):
+        if isinstance(leaf, Ref):
+            refs.append(leaf)
+
+    return refs
+
+
+def resolve_args(refs: Iterable[Ref]) -> Dict[str, Arg]:
+    """
+    Resolve a list of Refs into a mapping of {path: Arg}.
+
+    Handles conflicts:
+    - If multiple Refs point to the same path, they must have compatible Arg definitions.
+    - Currently enforces strict equality for Arg definitions if they exist.
+    """
+    resolved: Dict[str, Arg] = {}
+
+    for ref in refs:
+        if ARG not in ref.metadata:
+            continue
+
+        arg_def = ref.metadata[ARG]
+        if not isinstance(arg_def, Arg):
+            raise TypeError(
+                f"Invalid metadata for {ARG} in Ref '{ref.path}'. Expected Arg, got {type(arg_def)}."
+            )
+
+        path = ref.path
+
+        if path in resolved:
+            existing_arg = resolved[path]
+            # Simple conflict resolution: Check for equality
+            # We can improve this to allow merging compatible definitions (e.g. one has help, other doesn't)
+            # For now, strict check.
+            if existing_arg != arg_def:
+                raise ValueError(
+                    f"Conflicting Arg definitions for path '{path}':\n"
+                    f"1. {existing_arg}\n"
+                    f"2. {arg_def}\n"
+                    "Ensure all Refs for the same path use the same Arg definition."
+                )
+        else:
+            resolved[path] = arg_def
+
+    return resolved
+
+
+# --- 2. Parsing & Injection ---
+
+
+def _add_argument(parser: argparse.ArgumentParser, path: str, arg: Arg):
+    """
+    Add a single argument to the parser.
     """
     # 1. Determine Flag Names
     # Convert dotted path "model.config.lr" -> "--model.config.lr" and "--model-config-lr"
-    path = ref.path
     flags = [f"--{path}"]
     if "." in path:
         flags.append(f"--{path.replace('.', '-')}")
     if "_" in path:
-         flags.append(f"--{path.replace('_', '-')}")
-    
+        flags.append(f"--{path.replace('_', '-')}")
+
     # Add aliases (e.g., "-lr")
     flags.extend(arg.aliases)
-    
+
     # Remove duplicates while preserving order
     flags = list(dict.fromkeys(flags))
 
     # 2. Base kwargs for argparse
     kwargs = {
-        "dest": path, # Keep the dot notation for the destination key
+        "dest": path,  # Keep the dot notation for the destination key
         "help": arg.help,
         "metavar": arg.metavar,
     }
 
     # 3. Resolve Type and Default
-    arg_type = _infer_type(arg, ref)
+    arg_type = _infer_type(arg)
     default_val = arg.resolve_default()
 
     # Handle Optional[T] or Union[T, None] (Primitive unpacking)
@@ -133,14 +206,15 @@ def _add_argument_for_ref(parser: argparse.ArgumentParser, ref: Ref, arg: Arg):
             args = get_args(arg_type)
 
     # 4. Handle Specific Types
-    
+
     # --- Boolean ---
     if arg_type is bool:
         kwargs["type"] = _string_to_bool
         kwargs["nargs"] = "?"
         kwargs["const"] = True
-        
-        if default_val is not MISSING:
+
+        # Handle default values
+        if default_val is not _MISSING:
             kwargs["default"] = default_val
         else:
             # Default to False if required=False and no default provided (Standard argparse behavior)
@@ -164,7 +238,7 @@ def _add_argument_for_ref(parser: argparse.ArgumentParser, ref: Ref, arg: Arg):
     elif origin in (list, tuple) or arg_type in (list, tuple):
         kwargs["nargs"] = "+" if arg.nargs is None else arg.nargs
         kwargs["type"] = args[0] if args else str  # Default to str list if generic
-        if default_val is not MISSING:
+        if default_val is not _MISSING:
             kwargs["default"] = default_val
         elif arg.required:
             kwargs["required"] = True
@@ -174,7 +248,7 @@ def _add_argument_for_ref(parser: argparse.ArgumentParser, ref: Ref, arg: Arg):
     elif origin is Literal:
         kwargs["choices"] = args
         kwargs["type"] = type(args[0])
-        if default_val is not MISSING:
+        if default_val is not _MISSING:
             kwargs["default"] = default_val
         elif arg.required:
             kwargs["required"] = True
@@ -183,8 +257,10 @@ def _add_argument_for_ref(parser: argparse.ArgumentParser, ref: Ref, arg: Arg):
     elif isinstance(arg_type, type) and issubclass(arg_type, Enum):
         kwargs["choices"] = [e.value for e in arg_type]
         kwargs["type"] = type(list(kwargs["choices"])[0])
-        if default_val is not MISSING:
-            kwargs["default"] = default_val.value if isinstance(default_val, Enum) else default_val
+        if default_val is not _MISSING:
+            kwargs["default"] = (
+                default_val.value if isinstance(default_val, Enum) else default_val
+            )
         elif arg.required:
             kwargs["required"] = True
         parser.add_argument(*flags, **kwargs)
@@ -194,76 +270,100 @@ def _add_argument_for_ref(parser: argparse.ArgumentParser, ref: Ref, arg: Arg):
         kwargs["type"] = arg_type
         if arg.nargs is not None:
             kwargs["nargs"] = arg.nargs
-        
-        if default_val is not MISSING:
+
+        if default_val is not _MISSING:
             kwargs["default"] = default_val
         elif arg.required:
             kwargs["required"] = True
-            
+
         if arg.choices is not None:
             kwargs["choices"] = arg.choices
 
         parser.add_argument(*flags, **kwargs)
 
 
-def populate_parser(parser: argparse.ArgumentParser, refs: Iterable[Ref]) -> None:
+def populate_parser(parser: argparse.ArgumentParser, args_map: Dict[str, Arg]) -> None:
     """
-    Populate an existing ArgumentParser with arguments defined in the provided Refs.
+    Populate an existing ArgumentParser with resolved arguments.
     """
-    for ref in refs:
-        if ARG in ref.metadata:
-            arg_def = ref.metadata[ARG]
-            if not isinstance(arg_def, Arg):
-                raise TypeError(
-                    f"Invalid metadata for {ARG} in Ref '{ref.path}'. Expected Arg, got {type(arg_def)}."
-                )
-            _add_argument_for_ref(parser, ref, arg_def)
+    for path, arg in args_map.items():
+        _add_argument(parser, path, arg)
 
 
-def parse_refs(
-    refs: Iterable[Ref],
-    args: Optional[List[str]] = None,
+def parse_and_inject(
+    source: Union[Any, Iterable[Ref]],
+    context: Optional[Context] = None,
     parser: Optional[argparse.ArgumentParser] = None,
-    return_remaining: bool = False,
-) -> Union[Dict[str, Any], Tuple[Dict[str, Any], List[str]]]:
+    cli_args: Optional[List[str]] = None,
+    custom_args: Optional[Dict[str, Arg]] = None,
+) -> Union[Dict[str, Any], Context]:
     """
-    Main entry point for parsing arguments based on a list of Refs.
-    
+    High-level entry point to parse arguments and optionally inject them into a Context.
+
     Args:
-        refs: A list/iterable of Ref objects defining the available arguments.
-        args: Command line arguments to parse (defaults to sys.argv[1:]).
+        source: Either a Node element (to auto-collect Refs) or an iterable of Refs.
+        context: Optional Context to inject parsed values into. If provided, returns a new Context.
         parser: Optional existing parser to extend.
-        return_remaining: If True, returns a tuple (parsed_dict, remaining_args).
-    
+        cli_args: Command line arguments to parse (defaults to sys.argv[1:]).
+        custom_args: Additional arguments to add/override, mapping path -> Arg.
+
     Returns:
-        A dictionary mapping Ref paths to their parsed values.
+        If context is provided: A new Context with injected values.
+        If context is None: A dictionary of parsed values.
     """
+    # 1. Collect Refs
+    if (
+        isinstance(source, Iterable)
+        and not hasattr(source, "__iter_with_path__")
+        and not isinstance(source, (str, bytes))
+    ):
+        # Rough check for Iterable[Ref], assuming source isn't the Node structure itself (which might be iterable?)
+        # NODE structures are usually not directly iterable as Refs.
+        # Safer: Check if the first element is Ref?
+        # But source could be empty list.
+        # Let's rely on type checking or assume if it's a list/tuple of Refs it's Refs.
+        # If it's a NodeDef/NodeExec, it's not a list of Refs.
+        if isinstance(source, (list, tuple)) and (
+            not source or isinstance(source[0], Ref)
+        ):
+            refs = source
+        else:
+            # Assume it's a Node structure
+            refs = collect_refs(source)
+    else:
+        refs = collect_refs(source)
+
+    # 2. Resolve Args
+    args_map = resolve_args(refs)
+
+    # 3. Merge Custom Args
+    if custom_args:
+        args_map.update(custom_args)
+
+    # 4. Populate Parser
     if parser is None:
         parser = argparse.ArgumentParser()
-    
-    populate_parser(parser, refs)
-    
-    if args is None:
-        args = sys.argv[1:]
-        
-    namespace, remaining = parser.parse_known_args(args)
-    
-    # Convert Namespace to Dict
-    # Note: We use vars() which handles keys with dots correctly if they were set as dest
-    parsed_dict = vars(namespace)
-    
-    # Filter out keys that might be in the parser but not in our refs (if parser was pre-filled)
-    # Actually, we usually want all parsed args.
-    
-    if return_remaining:
-        return parsed_dict, remaining
-    
-    if remaining:
-        # If strict parsing is desired (default behavior of parse_args vs parse_known_args),
-        # we should probably raise unless user asked for remaining.
-        # But here we mimic the flexible behavior, or we can choose to raise.
-        # Standard argparse parse_args raises on unknown. Let's try to mimic that
-        # if user didn't ask for remaining.
-        parser.parse_args(args) # This will print usage and exit if unknown args exist
-        
-    return parsed_dict
+
+    populate_parser(parser, args_map)
+
+    # 5. Parse
+    if cli_args is None:
+        cli_args = sys.argv[1:]
+
+    namespace = parser.parse_args(cli_args)
+    parsed_values = vars(namespace)
+
+    # 6. Inject or Return
+    if context is None:
+        return parsed_values
+
+    # Prepare updates for Context.mutate
+    # parsed_values is { "path": value, ... }
+    # Context.mutate expects { Ref: value }
+    updates = {}
+    for key, value in parsed_values.items():
+        # Only inject if it looks like a path (non-empty string)
+        if key:
+            updates[Ref(key)] = value
+
+    return context.mutate(updates=updates, drops=set())
