@@ -1,8 +1,7 @@
-from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Callable, Iterable, List, Optional, Type, Union
-
-# Re-export upstream metadata keys
+from typing import Any, Optional, Union
+from dataclasses import dataclass, field
+from collections.abc import Iterable, Callable
 from slyme.context.metadata import HELP, TYPE
 
 __all__ = [
@@ -14,7 +13,6 @@ __all__ = [
 
 # Metadata Key
 ARG = "node.arg"
-
 _Missing = Enum("_Missing", ["MARK"])
 _MISSING = _Missing.MARK
 
@@ -32,11 +30,11 @@ class Arg:
     default: Any = _MISSING
     default_factory: Union[Callable[[], Any], _Missing] = _MISSING
     help: Optional[str] = None
-    type: Optional[Type] = None
+    type: Optional[type] = None
     choices: Optional[Iterable[Any]] = None
     required: bool = False
     nargs: Union[str, int, None] = None
-    aliases: List[str] = field(default_factory=list)
+    aliases: list[str] = field(default_factory=list)
     metavar: Optional[str] = None
 
     @staticmethod
