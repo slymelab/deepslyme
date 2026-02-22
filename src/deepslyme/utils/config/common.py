@@ -26,7 +26,7 @@ def collect_refs(element: Any) -> List[Ref]:
         return isinstance(node, Ref)
 
     # We iterate using NODE_PYTREE_ENGINE which knows how to traverse Node structures
-    for _, leaf in NODE_PYTREE_ENGINE.iter_with_path(element, is_leaf=is_leaf):
+    for _, leaf in NODE_PYTREE_ENGINE.iter_with_key_path(element, is_leaf=is_leaf):
         if isinstance(leaf, Ref):
             refs.append(leaf)
 
