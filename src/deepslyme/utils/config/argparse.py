@@ -122,7 +122,7 @@ def _handle_list(
     # We prefer type_args from get_args(arg_type) if available.
     inner_type = type_args[0] if type_args else str
     kwargs["type"] = inner_type
-    
+
     if not Arg.is_missing(default_val):
         kwargs["default"] = default_val
     elif arg.required:
@@ -143,7 +143,9 @@ def _handle_tuple(
     type_args: tuple,
 ):
     # Treat tuple similar to list for argparse
-    _handle_list(parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args)
+    _handle_list(
+        parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args
+    )
 
 
 @ARG_HANDLERS.register(key=dict)
@@ -164,11 +166,11 @@ def _handle_dict(
         kwargs["default"] = default_val
     elif arg.required:
         kwargs["required"] = True
-    
-    # dict usually doesn't use choices in CLI unless specific constraint, 
+
+    # dict usually doesn't use choices in CLI unless specific constraint,
     # but argparse choices check against the parsed object (dict), which might be tricky if user passes JSON string.
     # So we omit choices for dict unless we want to support it.
-    
+
     parser.add_argument(*flags, **kwargs)
 
 
@@ -281,27 +283,45 @@ def _add_argument(parser: argparse.ArgumentParser, path: str, arg: Arg):
             type_args = get_args(arg_type)
 
     # 4. Handle Specific Types using Registry or Dispatch
-    
+
     # Try direct registry match (safe usage of get)
     handler = ARG_HANDLERS.get(arg_type, default=None)
     if handler:
-        handler(parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args)
+        handler(
+            parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args
+        )
         return
 
     # Try origin match (for List[int] etc where arg_type is generic alias)
     if origin:
         handler = ARG_HANDLERS.get(origin, default=None)
         if handler:
-            handler(parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args)
+            handler(
+                parser,
+                path,
+                arg,
+                flags,
+                kwargs,
+                default_val,
+                arg_type,
+                origin,
+                type_args,
+            )
             return
 
     # Fallback / Special Cases
     if origin is Literal:
-        _handle_literal(parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args)
+        _handle_literal(
+            parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args
+        )
     elif isinstance(arg_type, type) and issubclass(arg_type, Enum):
-        _handle_enum(parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args)
+        _handle_enum(
+            parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args
+        )
     else:
-        _handle_generic(parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args)
+        _handle_generic(
+            parser, path, arg, flags, kwargs, default_val, arg_type, origin, type_args
+        )
 
 
 def populate_parser(parser: argparse.ArgumentParser, args_map: Dict[str, Arg]) -> None:
