@@ -1,6 +1,6 @@
 import math
 import logging
-from typing import Any, list
+from typing import Any
 import torch
 from slyme.context import Context, Ref
 from slyme.node import Node, node, sequential_exec, Auto
