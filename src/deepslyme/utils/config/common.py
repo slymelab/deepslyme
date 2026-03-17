@@ -10,7 +10,7 @@ from typing import (
 
 from deepslyme.context.metadata import ARG, HELP, TYPE, Arg
 from slyme.context import Ref
-from slyme.node.core import NODE_PYTREE_ENGINE
+from slyme.node.core import NODE_ENGINE
 
 __all__ = ["collect_refs", "resolve_args_from_refs", "prepare_args"]
 
@@ -18,7 +18,7 @@ __all__ = ["collect_refs", "resolve_args_from_refs", "prepare_args"]
 def collect_refs(element: Any) -> List[Ref]:
     """
     Collect all Ref objects from a node structure (NodeDef, NodeExec, etc.)
-    using the NODE_PYTREE_ENGINE.
+    using the NODE_ENGINE.
     """
     refs: List[Ref] = []
 
@@ -26,7 +26,7 @@ def collect_refs(element: Any) -> List[Ref]:
         return isinstance(node, Ref)
 
     # We iterate using NODE_PYTREE_ENGINE which knows how to traverse Node structures
-    for _, leaf in NODE_PYTREE_ENGINE.iter_with_key_path(element, is_leaf=is_leaf):
+    for _, leaf in NODE_ENGINE.iter_with_key_path(element, is_leaf=is_leaf):
         if isinstance(leaf, Ref):
             refs.append(leaf)
 
