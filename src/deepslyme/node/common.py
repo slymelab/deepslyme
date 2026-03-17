@@ -261,7 +261,7 @@ def create_optimizer(
 
     return ctx.set(
         optimizer,
-        OPTIMIZER_REGISTRY[optimizer_cls](
+        OPTIMIZER_REGISTRY.get(optimizer_cls)(
             optimizer_grouped_parameters, **optimizer_kwargs
         ),
     )
@@ -290,7 +290,7 @@ def create_scheduler(
         )
 
     num_warmup_steps = math.ceil(warmup_ratio * state_max_steps)
-    scheduler_factory = SCHEDULER_REGISTRY[lr_scheduler_type]
+    scheduler_factory = SCHEDULER_REGISTRY.get(lr_scheduler_type)
 
     # Dynamically instantiate the scheduler
     scheduler = scheduler_factory(
