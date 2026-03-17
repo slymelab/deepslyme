@@ -316,7 +316,9 @@ def init_progress(
     """Initialize tqdm progress bar, only on the main process (rank 0)."""
     if process_index == 0:
         return ctx.set(progress, tqdm(total=state_max_steps, desc=task_desc))
-    return ctx
+    else:
+        # NOTE: Avoid auto injection error in other processes
+        return ctx.set(progress, None)
 
 
 @node
