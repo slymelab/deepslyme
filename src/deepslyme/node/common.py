@@ -2,7 +2,7 @@ import re
 import math
 import logging
 from functools import partial
-from typing import Any, Optional
+from typing import Any, Optional, Union
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, DistributedSampler
@@ -326,12 +326,12 @@ def update_progress(
     ctx: Context,
     /,
     *,
-    progress: Auto[Any],
+    progress: Auto[Union[tqdm, None]],
     process_index: Auto[int] = 0,
     state_global_step: Auto[int],
 ) -> Context:
     """Update tqdm progress bar, only on the main process (rank 0)."""
-    if process_index == 0:
+    if process_index == 0 and progress is not None:
         progress.update(state_global_step - progress.n)
     return ctx
 
@@ -341,10 +341,10 @@ def destroy_progress(
     ctx: Context,
     /,
     *,
-    progress: Auto[Any],
+    progress: Auto[Union[tqdm, None]],
     process_index: Auto[int] = 0,
 ) -> Context:
     """Close tqdm progress bar, only on the main process (rank 0)."""
-    if process_index == 0:
+    if process_index == 0 and progress is not None:
         progress.close()
     return ctx
