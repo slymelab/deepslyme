@@ -2,13 +2,15 @@ import re
 import math
 import logging
 from functools import partial
+from itertools import islice
+from collections.abc import Iterable, Iterator
 from typing import Any, Optional, Union
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
 from slyme.context import Context, Ref
-from slyme.node import node, Auto
+from slyme.node import Node, node, Auto, sequential_exec
 from slyme.utils.pytree import PyTreeEngine
 import deepslyme.utils.accelerator as accelerator
 from deepslyme.utils.optimizer import OPTIMIZER_REGISTRY
@@ -347,4 +349,61 @@ def destroy_progress(
     """Close tqdm progress bar, only on the main process (rank 0)."""
     if process_index == 0 and progress is not None:
         progress.close()
+    return ctx
+
+
+def batched(iterable: Iterable, n: int) -> Iterator[tuple]:
+    """Safe batched iterator."""
+    if n < 1:
+        raise ValueError("n must be at least one")
+    it = iter(iterable)
+    while chunk := tuple(islice(it, n)):
+        yield chunk
+
+
+@node
+def dataloader_loop(
+    ctx: Context,
+    /,
+    *,
+    dataloader: Auto[DataLoader],
+    step: Ref[Any],
+    step_inputs: Ref[Any],
+    step_current_gas: Ref[int],
+    step_should_sync_grad: Ref[bool],
+    state_global_step: Ref[int],
+    mini_step_nodes: list[Node],
+    global_step_nodes: list[Node],
+    control_should_stop_epoch: Ref[bool],
+    control_should_stop_training: Ref[bool],
+    state_max_steps: Auto[int],
+    grad_acc_steps: Auto[int],
+) -> Context:
+    """
+    Generic Dataloader loop.
+    Dynamically handles the final tail batch to prevent hangs and scale mismatch
+    when the remaining steps are less than grad_acc_steps.
+    """
+    for chunk in batched(dataloader, grad_acc_steps):
+        current_gas = len(chunk)
+        ctx = ctx.set(step_current_gas, current_gas)
+
+        for i, inputs in enumerate(chunk):
+            should_sync = i == current_gas - 1
+            ctx = ctx.update(
+                {
+                    step_inputs: inputs,
+                    step_should_sync_grad: should_sync,
+                }
+            )
+            ctx = sequential_exec(ctx, mini_step_nodes)
+
+        ctx = ctx.set(state_global_step, ctx.get(state_global_step) + 1)
+        ctx = sequential_exec(ctx, global_step_nodes)
+
+        ctx = ctx.delete(step)
+        if ctx.get(state_global_step) >= state_max_steps:
+            ctx = ctx.set(control_should_stop_training, True)
+        if ctx.get(control_should_stop_training) or ctx.get(control_should_stop_epoch):
+            break
     return ctx

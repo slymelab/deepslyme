@@ -3,13 +3,10 @@ import json
 import logging
 from datetime import timedelta
 from typing import Any, Optional
-from itertools import islice
-from collections.abc import Iterable, Iterator
 import torch
-from torch.utils.data import DataLoader
 import deepspeed
 from slyme.context import Context, Ref
-from slyme.node import Node, node, sequential_exec, Auto
+from slyme.node import node, wrapper, Auto, Node
 from slyme.utils.pytree import P, PyTreeEngine
 import deepslyme.utils.accelerator as accelerator
 from deepslyme.node.distributed import DistributedState
@@ -127,67 +124,40 @@ def deepspeed_config_init(
     return ctx.set(deepspeed_config, new_ds_config)
 
 
-def batched(iterable: Iterable, n: int) -> Iterator[tuple]:
-    """Safe batched iterator."""
-    if n < 1:
-        raise ValueError("n must be at least one")
-    it = iter(iterable)
-    while chunk := tuple(islice(it, n)):
-        yield chunk
-
-
 @node
-def deepspeed_dataloader_loop(
+def deepspeed_set_grad_acc_boundary(
     ctx: Context,
     /,
     *,
-    dataloader: Auto[DataLoader],
-    step: Ref[Any],
-    step_inputs: Ref[Any],
-    step_current_gas: Ref[int],
-    step_should_sync_grad: Ref[bool],
-    state_global_step: Ref[int],
-    mini_step_nodes: list[Node],
-    global_step_nodes: list[Node],
-    control_should_stop_epoch: Ref[bool],
-    control_should_stop_training: Ref[bool],
-    state_max_steps: Auto[int],
     model_for_training: Auto[Any],
-    grad_acc_steps: Auto[int],
+    step_should_sync_grad: Auto[bool],
 ) -> Context:
-    """
-    DeepSpeed Dataloader loop.
-    Dynamically handles the final tail batch to prevent DDP hangs and scale mismatch
-    when the remaining steps are less than grad_acc_steps.
-    """
-    for chunk in batched(dataloader, grad_acc_steps):
-        current_gas = len(chunk)
-        ctx = ctx.set(step_current_gas, current_gas)
+    """Set the gradient accumulation boundary for DeepSpeed."""
+    model_for_training.set_gradient_accumulation_boundary(step_should_sync_grad)
+    return ctx
 
-        for i, inputs in enumerate(chunk):
-            should_sync = i == current_gas - 1
-            ctx = ctx.update(
-                {
-                    step_inputs: inputs,
-                    step_should_sync_grad: should_sync,
-                }
-            )
-            model_for_training.set_gradient_accumulation_boundary(should_sync)
-            ctx = sequential_exec(ctx, mini_step_nodes)
 
-        # NOTE: We set the boundary to True to force engine.step to work.
-        model_for_training.set_gradient_accumulation_boundary(True)
-        try:
-            ctx = ctx.set(state_global_step, ctx.get(state_global_step) + 1)
-            ctx = sequential_exec(ctx, global_step_nodes)
-        finally:
-            model_for_training.set_gradient_accumulation_boundary(False)
-
-        ctx = ctx.delete(step)
-        if ctx.get(state_global_step) >= state_max_steps:
-            ctx = ctx.set(control_should_stop_training, True)
-        if ctx.get(control_should_stop_training) or ctx.get(control_should_stop_epoch):
-            break
+@wrapper
+def deepspeed_with_grad_acc_boundary(
+    ctx: Context,
+    wrapped: Node,
+    call_next,
+    /,
+    *,
+    model_for_training: Auto[Any],
+    step_should_sync_grad: Auto[bool],
+    reset_boundary_to: Auto[Optional[bool]] = None,
+) -> Context:
+    reset_val = (
+        reset_boundary_to
+        if reset_boundary_to is not None
+        else model_for_training.is_gradient_accumulation_boundary()
+    )
+    model_for_training.set_gradient_accumulation_boundary(step_should_sync_grad)
+    try:
+        ctx = call_next(ctx)
+    finally:
+        model_for_training.set_gradient_accumulation_boundary(reset_val)
     return ctx
 
 
