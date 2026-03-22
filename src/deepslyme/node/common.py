@@ -407,3 +407,60 @@ def dataloader_loop(
         if ctx.get(control_should_stop_training) or ctx.get(control_should_stop_epoch):
             break
     return ctx
+
+
+@node
+def dataloader_loop_with_micro_steps(
+    ctx: Context,
+    /,
+    *,
+    dataloader: Auto[DataLoader],
+    step: Ref[Any],
+    step_inputs: Ref[Any],
+    step_current_gas: Ref[float],
+    step_should_sync_grad: Ref[bool],
+    state_global_step: Ref[int],
+    step_micro_batches: Ref[list[dict[Any, Any]]],
+    mini_step_nodes: list[Node],
+    micro_step_nodes: list[Node],
+    global_step_nodes: list[Node],
+    control_should_stop_epoch: Ref[bool],
+    control_should_stop_training: Ref[bool],
+    state_max_steps: Auto[int],
+    grad_acc_steps: Auto[int],
+) -> Context:
+    """
+    Generic Data-Driven Dataloader loop with nested micro-steps.
+    It expects `mini_step_nodes` to produce a list of dictionary updates (`step_micro_batches`), 
+    where each dictionary contains the specific context mutations for that micro-batch.
+    """
+    for chunk in batched(dataloader, grad_acc_steps):
+        current_gas = float(len(chunk))
+
+        for i, inputs in enumerate(chunk):
+            is_last_mini = (i == current_gas - 1)
+            ctx = ctx.update({
+                step_inputs: inputs,
+                step_current_gas: current_gas,
+            })
+            ctx = sequential_exec(ctx, mini_step_nodes)
+            micro_batches = ctx.get(step_micro_batches)
+            num_micro_batches = len(micro_batches)
+
+            for mb_idx, mb_updates in enumerate(micro_batches):
+                is_last_micro = (mb_idx == num_micro_batches - 1)
+                should_sync = is_last_mini and is_last_micro
+                ctx = ctx.update(mb_updates)
+                ctx = ctx.set(step_should_sync_grad, should_sync)
+                ctx = sequential_exec(ctx, micro_step_nodes)
+
+        ctx = ctx.set(state_global_step, ctx.get(state_global_step) + 1)
+        ctx = sequential_exec(ctx, global_step_nodes)
+
+        ctx = ctx.delete(step)
+        if ctx.get(state_global_step) >= state_max_steps:
+            ctx = ctx.set(control_should_stop_training, True)
+        if ctx.get(control_should_stop_training) or ctx.get(control_should_stop_epoch):
+            break
+
+    return ctx
