@@ -420,7 +420,7 @@ def dataloader_loop_with_micro_steps(
     step_current_gas: Ref[float],
     step_should_sync_grad: Ref[bool],
     state_global_step: Ref[int],
-    step_micro_batches: Ref[list[dict[Any, Any]]],
+    step_micro_batches: Ref[list[dict[Ref, Any]]],
     mini_step_nodes: list[Node],
     micro_step_nodes: list[Node],
     global_step_nodes: list[Node],
