@@ -360,7 +360,7 @@ def parse_and_inject(
 
     # 2. Populate Parser
     if parser is None:
-        parser = argparse.ArgumentParser()
+        parser = argparse.ArgumentParser(allow_abbrev=False)
 
     populate_parser(parser, args_map)
 
