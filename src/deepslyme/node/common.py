@@ -417,7 +417,7 @@ def dataloader_loop_with_micro_steps(
     dataloader: Auto[DataLoader],
     step: Ref[Any],
     step_inputs: Ref[Any],
-    step_current_gas: Ref[float],
+    step_current_gas: Ref[int],
     step_should_sync_grad: Ref[bool],
     state_global_step: Ref[int],
     step_micro_batches: Ref[list[dict[Ref, Any]]],
@@ -431,27 +431,34 @@ def dataloader_loop_with_micro_steps(
 ) -> Context:
     """
     Generic Data-Driven Dataloader loop with nested micro-steps.
-    It expects `mini_step_nodes` to produce a list of dictionary updates (`step_micro_batches`), 
+    It expects `mini_step_nodes` to produce a list of dictionary updates (`step_micro_batches`),
     where each dictionary contains the specific context mutations for that micro-batch.
     """
     for chunk in batched(dataloader, grad_acc_steps):
-        current_gas = float(len(chunk))
+        current_gas = len(chunk)
 
         for i, inputs in enumerate(chunk):
-            is_last_mini = (i == current_gas - 1)
-            ctx = ctx.update({
-                step_inputs: inputs,
-                step_current_gas: current_gas,
-            })
+            is_last_mini = i == current_gas - 1
+            ctx = ctx.update(
+                {
+                    step_inputs: inputs,
+                }
+            )
             ctx = sequential_exec(ctx, mini_step_nodes)
             micro_batches = ctx.get(step_micro_batches)
             num_micro_batches = len(micro_batches)
+            final_gas = current_gas * num_micro_batches
 
             for mb_idx, mb_updates in enumerate(micro_batches):
-                is_last_micro = (mb_idx == num_micro_batches - 1)
+                is_last_micro = mb_idx == num_micro_batches - 1
                 should_sync = is_last_mini and is_last_micro
                 ctx = ctx.update(mb_updates)
-                ctx = ctx.set(step_should_sync_grad, should_sync)
+                ctx = ctx.update(
+                    {
+                        step_should_sync_grad: should_sync,
+                        step_current_gas: final_gas,
+                    }
+                )
                 ctx = sequential_exec(ctx, micro_step_nodes)
 
         ctx = ctx.set(state_global_step, ctx.get(state_global_step) + 1)
