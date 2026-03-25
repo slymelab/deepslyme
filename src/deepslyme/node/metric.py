@@ -39,7 +39,7 @@ def collect_metrics(
     step_metrics_history: Ref[dict[str, list[MetricRecord]]],
 ) -> Context:
     """Micro-step node: Collect metrics into columnar history."""
-    history = ctx.get(step_metrics_history) or defaultdict(list)
+    history = ctx.get(step_metrics_history, None) or defaultdict(list)
 
     def _sanitize(element):
         if isinstance(element, torch.Tensor):
