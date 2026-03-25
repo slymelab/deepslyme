@@ -183,7 +183,7 @@ def reduce_and_log_metrics(
         ctx = ctx.set(state_log_history, log_history)
 
         log_strs = [
-            f"{k}: {v:.4f}" if isinstance(v, float) else f"{k}: {v}"
+            f"{k}: {v}" if isinstance(v, float) else f"{k}: {v}"
             for k, v in final_log_values.items()
         ]
         print(f"Step {state_global_step} | " + " | ".join(log_strs))
