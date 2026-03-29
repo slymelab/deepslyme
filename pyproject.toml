@@ -4,10 +4,10 @@ build-backend = "hatchling.build"
 
 [project]
 name = "deepslyme"
-version = "0.0.2rc2"
+version = "0.0.2rc3"
 description = "Placeholder for slyme series."
 readme = "README.md"
-authors = [{ name = "Zikang Liu", email = "liuzikang0625@gmail.com" }]
+authors = [{ name = "The SlymeLab Team" }]
 license = "Apache-2.0"
 classifiers = [
     "Programming Language :: Python :: 3",
@@ -15,6 +15,9 @@ classifiers = [
 ]
 requires-python = ">=3.9"
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/slymelab/deepslyme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/deepslyme"]
