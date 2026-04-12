@@ -13,7 +13,7 @@
         </p>
         <div class="flex flex-col sm:flex-row items-center justify-center gap-8 w-full mt-2">
           <SlymeCodeSnippet command="pip install deepslyme" />
-          <SlymeButtonLink :href="withBase('/guide/intro/what-is-deepslyme')" variant="outline">
+          <SlymeButtonLink :href="withBase('/zh/guide/intro/what-is-deepslyme')" variant="outline">
             开始了解 -&gt;
           </SlymeButtonLink>
         </div>

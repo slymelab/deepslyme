@@ -1,23 +1,35 @@
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling", "hatch-vcs"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.version.raw-options]
+local_scheme = "no-local-version"
 
 [project]
 name = "deepslyme"
-version = "0.0.2rc3"
-description = "Placeholder for slyme series."
+dynamic = ["version"]
+description = "DeepSlyme is a powerful LLM training framework built natively on Slyme."
 readme = "README.md"
 authors = [{ name = "The SlymeLab Team" }]
-license = "Apache-2.0"
+license = { text = "Apache-2.0" }
 classifiers = [
     "Programming Language :: Python :: 3",
     "Operating System :: OS Independent",
 ]
 requires-python = ">=3.9"
-dependencies = []
+dependencies = [
+    "typing-extensions>=4.0.0",
+    "slyme>=0.1.0"
+]
 
 [project.urls]
 Homepage = "https://github.com/slymelab/deepslyme"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/deepslyme"]
+
+[tool.ruff.lint.per-file-ignores]
+"src/**/*.py" = ["E402", "E741"]
