@@ -13,14 +13,14 @@
 # limitations under the License.
 
 from collections import defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable, Literal, Union
+from typing import Any, Literal, TypedDict
 
 import torch
 import torch.distributed as dist
-
 from slyme.context import Context, Ref
-from slyme.node import node, Auto
+from slyme.node import Auto, node
 from slyme.utils.pytree import PyTreeEngine
 
 
@@ -30,15 +30,19 @@ class MetricRecord:
 
 
 BuiltinStrategy = Literal["mean", "sum", "max", "min", "latest"]
-ReducerCallable = Callable[
-    [list[MetricRecord], torch.device], Union[Any, dict[str, Any]]
-]
-ReducerType = Union[BuiltinStrategy, ReducerCallable]
+ReducerCallable = Callable[[list[MetricRecord], torch.device], Any | dict[str, Any]]
+ReducerType = BuiltinStrategy | ReducerCallable
 
 
 @dataclass(frozen=True)
 class MetricDef:
     reduce: ReducerType = "mean"
+
+
+class _SyncGroup(TypedDict):
+    op: Any
+    keys: list[tuple[str, str]]
+    vals: list[float]
 
 
 _metrics_pytree_engine = PyTreeEngine("sanitize_metrics")
@@ -51,7 +55,7 @@ def collect_metrics(
     *,
     current_metrics: Auto[dict[str, Any]],
     step_metrics_history: Ref[dict[str, list[MetricRecord]]],
-) -> Context:
+) -> None:
     """Micro-step node: Collect metrics into columnar history."""
     history = ctx.get(step_metrics_history, None)
     if history is None:
@@ -68,7 +72,7 @@ def collect_metrics(
         cleaned_val = _metrics_pytree_engine.map(_sanitize, val)
         history[name].append(MetricRecord(value=cleaned_val))
 
-    return ctx.set(step_metrics_history, history)
+    ctx.set(step_metrics_history, history)
 
 
 def _sync_tensors(vals: list[float], op: Any, device: torch.device) -> list[float]:
@@ -85,21 +89,21 @@ def reduce_and_log_metrics(
     ctx: Context,
     /,
     *,
-    metric_defs: Auto[dict[str, Union[ReducerType, MetricDef]]],
+    metric_defs: Auto[dict[str, ReducerType | MetricDef]],
     step_metrics_history: Ref[dict[str, list[MetricRecord]]],
     state_log_history: Ref[list],
     state_global_step: Auto[int],
     process_index: Auto[int],
     device: Auto[torch.device],
-) -> Context:
+) -> None:
     """Global-step node: Reduce history temporally and spatially, then log."""
     history = ctx.get(step_metrics_history)
     if not history:
-        return ctx
+        return
 
     # 1. Normalize metric definitions
     normalized_defs: dict[str, MetricDef] = {}
-    for name in history.keys():
+    for name in history:
         mdef = metric_defs.get(name, MetricDef(reduce="mean"))
         normalized_defs[name] = (
             mdef if isinstance(mdef, MetricDef) else MetricDef(reduce=mdef)
@@ -115,7 +119,7 @@ def reduce_and_log_metrics(
 
     # 3. Setup sync groups by ReduceOp to minimize all_reduce calls
     # Format: op_type -> {"op": dist.ReduceOp, "keys": [(name, type), ...], "vals": [float, ...]}
-    sync_groups = {
+    sync_groups: dict[str, _SyncGroup] = {
         "SUM": {
             "op": dist.ReduceOp.SUM if dist.is_initialized() else None,
             "keys": [],
@@ -158,7 +162,7 @@ def reduce_and_log_metrics(
             final_log_values[name] = records[-1].value
 
     # 5. Global Spatial Reduction (Distributed Sync) & Reconstruction
-    mean_accum = defaultdict(dict)
+    mean_accum: defaultdict[str, dict[str, float]] = defaultdict(dict)
     for group in sync_groups.values():
         synced_vals = _sync_tensors(group["vals"], group["op"], device)
 
@@ -180,7 +184,10 @@ def reduce_and_log_metrics(
         records = history.get(name)
         if not records:
             continue
-        result = normalized_defs[name].reduce(records, device)
+        reducer = normalized_defs[name].reduce
+        if not callable(reducer):
+            continue
+        result = reducer(records, device)
         if isinstance(result, dict):
             final_log_values.update(result)
         else:
@@ -194,13 +201,10 @@ def reduce_and_log_metrics(
         if log_history is None:
             log_history = []
         log_history.append(log_entry)
-        ctx = ctx.set(state_log_history, log_history)
+        ctx.set(state_log_history, log_history)
 
-        log_strs = [
-            f"{k}: {v}" if isinstance(v, float) else f"{k}: {v}"
-            for k, v in final_log_values.items()
-        ]
+        log_strs = [f"{k}: {v}" for k, v in final_log_values.items()]
         print(f"Step {state_global_step} | " + " | ".join(log_strs))
 
     # 9. Reset metrics history for the next step
-    return ctx.set(step_metrics_history, defaultdict(list))
+    ctx.set(step_metrics_history, defaultdict(list))

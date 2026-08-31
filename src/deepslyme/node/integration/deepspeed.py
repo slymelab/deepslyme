@@ -12,20 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import os
 import json
 import logging
+import os
 from datetime import timedelta
-from typing import Any, Optional
-import torch
+from typing import Any
+
 import deepspeed
-from slyme.context import Context, Ref
-from slyme.node import node, wrapper, Auto, Node
-from slyme.utils.pytree import P, PyTreeEngine
-import deepslyme.utils.accelerator as accelerator
+import torch
+from slyme.context import Context, Ref, RefLike
+from slyme.node import Auto, Node, node, wrapper
+from slyme.utils.pytree import KeyPath, MappingKey, PyTreeEngine
+
 from deepslyme.node.distributed import DistributedState
+from deepslyme.utils import accelerator
 
 logger = logging.getLogger(__name__)
+
+
+def _mapping_path(*keys: str) -> KeyPath:
+    return tuple(MappingKey(key) for key in keys)
 
 
 @node
@@ -35,7 +41,7 @@ def deepspeed_init_distributed(
     *,
     ddp_timeout: Auto[int] = 1800,
     distributed_state: Ref[DistributedState],
-) -> Context:
+) -> None:
     """Initialize the DeepSpeed distributed environment."""
     deepspeed.init_distributed(
         dist_backend=accelerator.current_comm_backend_name(),
@@ -43,13 +49,13 @@ def deepspeed_init_distributed(
     )
 
     distributed_state_ = DistributedState()
-    local_rank = int(os.environ.get("LOCAL_RANK", -1))
+    local_rank = int(os.environ.get("LOCAL_RANK", "-1"))
     if local_rank != -1:
         accelerator.set_device_index(local_rank)
     else:
         accelerator.set_device_index(distributed_state_.device.index)
 
-    return ctx.set(distributed_state, distributed_state_)
+    ctx.set(distributed_state, distributed_state_)
 
 
 @node
@@ -65,9 +71,9 @@ def deepspeed_config_init(
     fp16: Auto[bool] = False,
     bf16: Auto[bool] = True,
     max_grad_norm: Auto[float] = 1.0,
-    hidden_size: Auto[Optional[int]] = None,
+    hidden_size: Auto[int | None] = None,
     must_match: Auto[bool] = True,
-) -> Context:
+) -> None:
     """
     Advanced PyTree-based DeepSpeed Config parser.
     Treats target configurations as leaf nodes in a tree, achieving safe,
@@ -76,25 +82,25 @@ def deepspeed_config_init(
     with open(deepspeed_path, "r") as f:
         ds_config = json.load(f)
 
-    # Declare expected paths and values using KeyPathExpr (P)
+    # Declare the expected PyTree mapping paths and their runtime values.
     mappings = {
-        tuple(P["train_micro_batch_size_per_gpu"]): bsz,
-        tuple(P["gradient_accumulation_steps"]): grad_acc_steps,
-        tuple(P["train_batch_size"]): bsz * grad_acc_steps * num_processes,
-        tuple(P["gradient_clipping"]): max_grad_norm,
-        tuple(P["fp16"]["enabled"]): fp16,
-        tuple(P["bf16"]["enabled"]): bf16,
+        _mapping_path("train_micro_batch_size_per_gpu"): bsz,
+        _mapping_path("gradient_accumulation_steps"): grad_acc_steps,
+        _mapping_path("train_batch_size"): bsz * grad_acc_steps * num_processes,
+        _mapping_path("gradient_clipping"): max_grad_norm,
+        _mapping_path("fp16", "enabled"): fp16,
+        _mapping_path("bf16", "enabled"): bf16,
     }
 
     if hidden_size is not None:
-        mappings[tuple(P["zero_optimization"]["reduce_bucket_size"])] = (
+        mappings[_mapping_path("zero_optimization", "reduce_bucket_size")] = (
             hidden_size * hidden_size
         )
-        mappings[tuple(P["zero_optimization"]["stage3_prefetch_bucket_size"])] = int(
-            0.9 * hidden_size * hidden_size
+        mappings[_mapping_path("zero_optimization", "stage3_prefetch_bucket_size")] = (
+            int(0.9 * hidden_size * hidden_size)
         )
         mappings[
-            tuple(P["zero_optimization"]["stage3_param_persistence_threshold"])
+            _mapping_path("zero_optimization", "stage3_param_persistence_threshold")
         ] = 10 * hidden_size
 
     # Interceptor: Stop flattening if the path is declared in mappings
@@ -135,7 +141,7 @@ def deepspeed_config_init(
 
     # Reconstruct as a new dictionary (functional approach)
     new_ds_config = engine.unflatten(treedef, new_leaves)
-    return ctx.set(deepspeed_config, new_ds_config)
+    ctx.set(deepspeed_config, new_ds_config)
 
 
 @node
@@ -145,10 +151,9 @@ def deepspeed_set_grad_acc_boundary(
     *,
     model_for_training: Auto[Any],
     step_should_sync_grad: Auto[bool],
-) -> Context:
+) -> None:
     """Set the gradient accumulation boundary for DeepSpeed."""
     model_for_training.set_gradient_accumulation_boundary(step_should_sync_grad)
-    return ctx
 
 
 @wrapper
@@ -160,8 +165,8 @@ def deepspeed_with_grad_acc_boundary(
     *,
     model_for_training: Auto[Any],
     step_should_sync_grad: Auto[bool],
-    reset_boundary_to: Auto[Optional[bool]] = None,
-) -> Context:
+    reset_boundary_to: Auto[bool | None] = None,
+) -> Any:
     reset_val = (
         reset_boundary_to
         if reset_boundary_to is not None
@@ -169,10 +174,9 @@ def deepspeed_with_grad_acc_boundary(
     )
     model_for_training.set_gradient_accumulation_boundary(step_should_sync_grad)
     try:
-        ctx = call_next(ctx)
+        return call_next(ctx)
     finally:
         model_for_training.set_gradient_accumulation_boundary(reset_val)
-    return ctx
 
 
 @node
@@ -183,13 +187,12 @@ def deepspeed_backward(
     step_loss: Auto[torch.Tensor],
     model_for_training: Auto[Any],
     step_current_gas: Auto[int],
-) -> Context:
+) -> None:
     """
     Execute backward pass.
     Disables engine-native scale_wrt_gas to allow manual dynamic scaling using step_current_gas.
     """
     model_for_training.backward(step_loss / step_current_gas, scale_wrt_gas=False)
-    return ctx
 
 
 @node
@@ -198,10 +201,9 @@ def deepspeed_step(
     /,
     *,
     model_for_training: Auto[Any],
-) -> Context:
+) -> None:
     """Execute optimizer step via DeepSpeed Engine."""
     model_for_training.step()
-    return ctx
 
 
 @node
@@ -214,7 +216,7 @@ def deepspeed_initialize(
     model_for_training: Ref[Any],
     deepspeed_config: Auto[dict],
     lr_scheduler: Ref[Any],
-) -> Context:
+) -> None:
     """Initialize the DeepSpeed Engine with model, optimizer, and scheduler."""
     optimizer_ = ctx.get(optimizer, None)
     scheduler_ = ctx.get(lr_scheduler, None)
@@ -226,10 +228,10 @@ def deepspeed_initialize(
         lr_scheduler=scheduler_,
     )
 
-    updates = {model_for_training: model_engine}
+    updates: dict[RefLike, Any] = {model_for_training: model_engine}
     if optimizer_ is not None:
         updates[optimizer] = optimizer_
     if scheduler_ is not None:
         updates[lr_scheduler] = scheduler_
 
-    return ctx.update(updates)
+    ctx.update(updates)

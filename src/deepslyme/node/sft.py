@@ -12,12 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import math
 import logging
+import math
 from typing import Any
+
 import torch
 from slyme.context import Context, Ref
-from slyme.node import Node, node, sequential_exec, Auto
+from slyme.node import Auto, Node, node, sequential_exec
 
 logger = logging.getLogger(__name__)
 
@@ -40,7 +41,7 @@ def init_training_state(
     state_epoch: Ref[float],
     control_should_stop_epoch: Ref[bool],
     control_should_stop_training: Ref[bool],
-) -> Context:
+) -> None:
     """Initialize training state, including max_steps and num_train_epochs."""
     try:
         len_dataloader = len(train_dataloader)
@@ -75,7 +76,7 @@ def init_training_state(
         max_steps = math.ceil(arg_num_train_epochs * num_update_steps_per_epoch)
         num_train_epochs = math.ceil(arg_num_train_epochs)
 
-    return ctx.update(
+    ctx.update(
         {
             state_max_steps: max_steps,
             state_num_train_epochs: num_train_epochs,
@@ -98,15 +99,14 @@ def epoch_loop(
     state_epoch_idx: Ref[int],
     control_should_stop_training: Ref[bool],
     nodes: list[Node],
-) -> Context:
+) -> None:
     """Epoch loop."""
     for epoch in range(ctx.get(state_epoch_idx), state_num_train_epochs):
-        ctx = ctx.set(state_epoch_idx, epoch)
-        ctx = sequential_exec(ctx, nodes)
+        ctx.set(state_epoch_idx, epoch)
+        sequential_exec(ctx, nodes)
 
         if ctx.get(control_should_stop_training):
             break
-    return ctx
 
 
 @node
@@ -116,11 +116,10 @@ def dataloader_set_epoch(
     *,
     dataloader: Auto[Any],
     state_epoch_idx: Auto[int],
-) -> Context:
+) -> None:
     """Set epoch for dataloader sampler."""
     if hasattr(dataloader, "sampler") and hasattr(dataloader.sampler, "set_epoch"):
         dataloader.sampler.set_epoch(state_epoch_idx)
-    return ctx
 
 
 @node
@@ -131,7 +130,7 @@ def compute_loss(
     step_inputs: Auto[Any],
     model_for_training: Auto[Any],
     step_loss: Ref[torch.Tensor],
-) -> Context:
+) -> None:
     """Compute loss for SFT."""
     output = model_for_training(**step_inputs)
-    return ctx.set(step_loss, output["loss"])
+    ctx.set(step_loss, output["loss"])

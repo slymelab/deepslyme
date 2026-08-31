@@ -5,7 +5,7 @@
 
   <p>
     <a href="https://pypi.org/project/deepslyme/"><img src="https://img.shields.io/pypi/v/deepslyme.svg?label=PyPI" alt="PyPI version"></a>
-    <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python version" />
+    <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python version" />
     <a href="https://slymelab.github.io/deepslyme/zh/"><img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="Documentation"></a>
     <a href="https://github.com/slymelab/deepslyme/blob/main/LICENSE"><img src="https://img.shields.io/github/license/slymelab/deepslyme" alt="License"></a>
   </p>
@@ -24,7 +24,7 @@ DeepSlyme 是一款基于 [Slyme](https://slymelab.github.io/slyme/zh/) 原生�
 
 ## 安装
 
-DeepSlyme 需要 **Python 3.9+**。您可以通过 pip 直接安装：
+DeepSlyme 需要 **Python 3.10+**。您可以通过 pip 直接安装：
 
 ```bash
 pip install deepslyme

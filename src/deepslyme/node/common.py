@@ -12,23 +12,26 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-import re
-import math
 import logging
+import math
+import re
+from collections.abc import Iterable, Iterator
 from functools import partial
 from itertools import islice
-from collections.abc import Iterable, Iterator
-from typing import Any, Optional, Union
+from typing import Any
+
 import torch
-import torch.nn as nn
+from slyme.context import Context, Ref
+from slyme.node import Auto, Node, node, sequential_exec
+from slyme.utils.pytree import PyTreeEngine
+from torch import nn
 from torch.utils.data import DataLoader, DistributedSampler
 from tqdm import tqdm
-from slyme.context import Context, Ref
-from slyme.node import Node, node, Auto, sequential_exec
-from slyme.utils.pytree import PyTreeEngine
-import deepslyme.utils.accelerator as accelerator
+
+from deepslyme.utils import accelerator
 from deepslyme.utils.optimizer import OPTIMIZER_REGISTRY
 from deepslyme.utils.scheduler import SCHEDULER_REGISTRY
+
 from .distributed import DistributedState
 
 logger = logging.getLogger(__name__)
@@ -40,17 +43,15 @@ def set_seed(
     /,
     *,
     seed: Auto[int] = 42,
-) -> Context:
+) -> None:
     """Set the random seed for reproducibility."""
     accelerator.set_device_seed(seed)
-    return ctx
 
 
 @node
-def free_memory(ctx: Context, /) -> Context:
+def free_memory(ctx: Context, /) -> None:
     """Clear cache to avoid memory fragmentation."""
     accelerator.empty_cache()
-    return ctx
 
 
 @node
@@ -60,14 +61,13 @@ def empty_cache_by_step(
     *,
     empty_steps: Auto[int] = 1,
     state_global_step: Auto[int],
-) -> Context:
+) -> None:
     """Clear cache to avoid memory fragmentation."""
     if state_global_step > 0 and state_global_step % empty_steps == 0:
         accelerator.empty_cache()
-    return ctx
 
 
-def _seed_worker(worker_id: int, num_workers: int, rank: int):
+def _seed_worker(worker_id: int, num_workers: int, rank: int) -> None:
     init_seed = torch.initial_seed() % (2**32)
     worker_seed = (num_workers * rank + init_seed) % (2**32)
     accelerator.set_device_seed(worker_seed)
@@ -85,13 +85,13 @@ def prepare_distributed_dataloader(
     pin_memory: Auto[bool],
     persistent_workers: Auto[bool],
     drop_last: Auto[bool] = False,
-    prefetch_factor: Auto[Optional[int]],
+    prefetch_factor: Auto[int | None],
     process_index: Auto[int],
     dataloader: Ref[DataLoader],
     distributed_state: Auto[DistributedState],
     seed: Auto[int] = 42,
     is_training: Auto[bool] = True,
-) -> Context:
+) -> None:
     """Prepare a PyTorch DataLoader mapped with a DistributedSampler."""
     sampler = DistributedSampler(
         dataset,
@@ -120,7 +120,7 @@ def prepare_distributed_dataloader(
             _seed_worker, num_workers=num_workers, rank=process_index
         )
 
-    return ctx.set(dataloader, DataLoader(dataset, **dataloader_params))
+    ctx.set(dataloader, DataLoader(dataset, **dataloader_params))
 
 
 _inputs_pytree_engine = PyTreeEngine("prepare_inputs")
@@ -133,8 +133,8 @@ def prepare_inputs(
     *,
     step_inputs: Ref[Any],
     device: Auto[torch.device],
-    dtype: Auto[Optional[torch.dtype]] = None,
-) -> Context:
+    dtype: Auto[torch.dtype | None] = None,
+) -> None:
     """Recursively convert dtype and device of step_inputs."""
 
     def _prepare(element):
@@ -147,7 +147,7 @@ def prepare_inputs(
             return element.to(**kwargs, non_blocking=True)
         return element
 
-    return ctx.set(
+    ctx.set(
         step_inputs,
         _inputs_pytree_engine.map(_prepare, ctx.get(step_inputs)),
     )
@@ -159,9 +159,9 @@ def clean_step_inputs(
     /,
     *,
     step_inputs: Ref[Any],
-) -> Context:
+) -> None:
     """Delete step_inputs to free memory."""
-    return ctx.delete(step_inputs)
+    ctx.delete(step_inputs)
 
 
 @node
@@ -172,23 +172,22 @@ def setup_dtype(
     dtype: Ref[torch.dtype],
     bf16: Auto[bool] = True,
     fp16: Auto[bool] = False,
-):
+) -> None:
     """Setup dtype."""
     if bf16 and fp16:
         raise ValueError("bf16 and fp16 cannot be True at the same time.")
     if bf16:
-        ctx = ctx.set(dtype, torch.bfloat16)
+        ctx.set(dtype, torch.bfloat16)
     elif fp16:
-        ctx = ctx.set(dtype, torch.float16)
+        ctx.set(dtype, torch.float16)
     else:
-        ctx = ctx.set(dtype, torch.float32)
-    return ctx
+        ctx.set(dtype, torch.float32)
 
 
 def _get_parameter_names(
     model: nn.Module,
     forbidden_layer_types: list[type],
-    forbidden_layer_names: Optional[list[str]] = None,
+    forbidden_layer_names: list[str] | None = None,
 ):
     """
     Returns the names of the model parameters that are not inside a forbidden layer.
@@ -253,8 +252,8 @@ def create_optimizer(
     optimizer_cls: Auto[str],
     optimizer_kwargs: Auto[dict],
     optimizer: Ref[torch.optim.Optimizer],
-) -> Context:
-    """"""
+) -> None:
+    """Create and store the configured optimizer."""
     decay_parameters = _get_decay_parameter_names(model)
     optimizer_grouped_parameters = [
         {
@@ -275,7 +274,7 @@ def create_optimizer(
         },
     ]
 
-    return ctx.set(
+    ctx.set(
         optimizer,
         OPTIMIZER_REGISTRY.get(optimizer_cls)(
             optimizer_grouped_parameters, **optimizer_kwargs
@@ -294,7 +293,7 @@ def create_scheduler(
     state_max_steps: Auto[int],
     warmup_ratio: Auto[float],
     lr_scheduler: Ref[Any],
-) -> Context:
+) -> None:
     """
     Node for building learning rate schedulers using pure PyTorch.
     Eliminates the transformers library dependency.
@@ -316,7 +315,7 @@ def create_scheduler(
         **lr_scheduler_kwargs,
     )
 
-    return ctx.set(lr_scheduler, scheduler)
+    ctx.set(lr_scheduler, scheduler)
 
 
 @node
@@ -328,13 +327,13 @@ def init_progress(
     state_max_steps: Auto[int],
     process_index: Auto[int] = 0,
     task_desc: str = "",
-) -> Context:
+) -> None:
     """Initialize tqdm progress bar, only on the main process (rank 0)."""
     if process_index == 0:
-        return ctx.set(progress, tqdm(total=state_max_steps, desc=task_desc))
+        ctx.set(progress, tqdm(total=state_max_steps, desc=task_desc))
     else:
         # NOTE: Avoid auto injection error in other processes
-        return ctx.set(progress, None)
+        ctx.set(progress, None)
 
 
 @node
@@ -342,14 +341,13 @@ def update_progress(
     ctx: Context,
     /,
     *,
-    progress: Auto[Union[tqdm, None]],
+    progress: Auto[tqdm | None],
     process_index: Auto[int] = 0,
     state_global_step: Auto[int],
-) -> Context:
+) -> None:
     """Update tqdm progress bar, only on the main process (rank 0)."""
     if process_index == 0 and progress is not None:
         progress.update(state_global_step - progress.n)
-    return ctx
 
 
 @node
@@ -357,13 +355,12 @@ def destroy_progress(
     ctx: Context,
     /,
     *,
-    progress: Auto[Union[tqdm, None]],
+    progress: Auto[tqdm | None],
     process_index: Auto[int] = 0,
-) -> Context:
+) -> None:
     """Close tqdm progress bar, only on the main process (rank 0)."""
     if process_index == 0 and progress is not None:
         progress.close()
-    return ctx
 
 
 def batched(iterable: Iterable, n: int) -> Iterator[tuple]:
@@ -392,7 +389,7 @@ def dataloader_loop(
     control_should_stop_training: Ref[bool],
     state_max_steps: Auto[int],
     grad_acc_steps: Auto[int],
-) -> Context:
+) -> None:
     """
     Generic Dataloader loop.
     Dynamically handles the final tail batch to prevent hangs and scale mismatch
@@ -400,27 +397,26 @@ def dataloader_loop(
     """
     for chunk in batched(dataloader, grad_acc_steps):
         current_gas = len(chunk)
-        ctx = ctx.set(step_current_gas, current_gas)
+        ctx.set(step_current_gas, current_gas)
 
         for i, inputs in enumerate(chunk):
             should_sync = i == current_gas - 1
-            ctx = ctx.update(
+            ctx.update(
                 {
                     step_inputs: inputs,
                     step_should_sync_grad: should_sync,
                 }
             )
-            ctx = sequential_exec(ctx, mini_step_nodes)
+            sequential_exec(ctx, mini_step_nodes)
 
-        ctx = ctx.set(state_global_step, ctx.get(state_global_step) + 1)
-        ctx = sequential_exec(ctx, global_step_nodes)
+        ctx.set(state_global_step, ctx.get(state_global_step) + 1)
+        sequential_exec(ctx, global_step_nodes)
 
-        ctx = ctx.delete(step)
+        ctx.delete(step)
         if ctx.get(state_global_step) >= state_max_steps:
-            ctx = ctx.set(control_should_stop_training, True)
+            ctx.set(control_should_stop_training, True)
         if ctx.get(control_should_stop_training) or ctx.get(control_should_stop_epoch):
             break
-    return ctx
 
 
 @node
@@ -442,7 +438,7 @@ def dataloader_loop_with_micro_steps(
     control_should_stop_training: Ref[bool],
     state_max_steps: Auto[int],
     grad_acc_steps: Auto[int],
-) -> Context:
+) -> None:
     """
     Generic Data-Driven Dataloader loop with nested micro-steps.
     It expects `mini_step_nodes` to produce a list of dictionary updates (`step_micro_batches`),
@@ -453,12 +449,12 @@ def dataloader_loop_with_micro_steps(
 
         for i, inputs in enumerate(chunk):
             is_last_mini = i == current_gas - 1
-            ctx = ctx.update(
+            ctx.update(
                 {
                     step_inputs: inputs,
                 }
             )
-            ctx = sequential_exec(ctx, mini_step_nodes)
+            sequential_exec(ctx, mini_step_nodes)
             micro_batches = ctx.get(step_micro_batches)
             num_micro_batches = len(micro_batches)
             final_gas = current_gas * num_micro_batches
@@ -466,22 +462,20 @@ def dataloader_loop_with_micro_steps(
             for mb_idx, mb_updates in enumerate(micro_batches):
                 is_last_micro = mb_idx == num_micro_batches - 1
                 should_sync = is_last_mini and is_last_micro
-                ctx = ctx.update(mb_updates)
-                ctx = ctx.update(
+                ctx.update(mb_updates)
+                ctx.update(
                     {
                         step_should_sync_grad: should_sync,
                         step_current_gas: final_gas,
                     }
                 )
-                ctx = sequential_exec(ctx, micro_step_nodes)
+                sequential_exec(ctx, micro_step_nodes)
 
-        ctx = ctx.set(state_global_step, ctx.get(state_global_step) + 1)
-        ctx = sequential_exec(ctx, global_step_nodes)
+        ctx.set(state_global_step, ctx.get(state_global_step) + 1)
+        sequential_exec(ctx, global_step_nodes)
 
-        ctx = ctx.delete(step)
+        ctx.delete(step)
         if ctx.get(state_global_step) >= state_max_steps:
-            ctx = ctx.set(control_should_stop_training, True)
+            ctx.set(control_should_stop_training, True)
         if ctx.get(control_should_stop_training) or ctx.get(control_should_stop_epoch):
             break
-
-    return ctx

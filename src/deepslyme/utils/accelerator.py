@@ -14,14 +14,14 @@
 
 import gc
 import random
-from typing import Optional
+
 import numpy as np
 import torch
 
-_MANUAL_BACKEND: Optional[str] = None
+_MANUAL_BACKEND: str | None = None
 
 
-def set_backend(backend_name: Optional[str]) -> None:
+def set_backend(backend_name: str | None) -> None:
     """Manually set the backend"""
     global _MANUAL_BACKEND
     _MANUAL_BACKEND = backend_name

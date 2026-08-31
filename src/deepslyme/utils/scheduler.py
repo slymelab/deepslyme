@@ -14,9 +14,10 @@
 
 import math
 from functools import partial
+
 import torch
-from torch.optim.lr_scheduler import LambdaLR
 from slyme.utils.registry import Registry
+from torch.optim.lr_scheduler import LambdaLR
 
 SCHEDULER_REGISTRY = Registry[type[LambdaLR]]("scheduler")
 

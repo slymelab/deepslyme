@@ -12,9 +12,13 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-from .common import collect_refs, resolve_args_from_refs
+from .argparse import parse_and_inject, populate_parser
+from .common import collect_refs, prepare_args, resolve_args_from_refs
 
 __all__ = [
     "collect_refs",
+    "parse_and_inject",
+    "populate_parser",
+    "prepare_args",
     "resolve_args_from_refs",
 ]

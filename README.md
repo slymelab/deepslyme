@@ -5,7 +5,7 @@
 
   <p>
     <a href="https://pypi.org/project/deepslyme/"><img src="https://img.shields.io/pypi/v/deepslyme.svg?label=PyPI" alt="PyPI version"></a>
-    <img src="https://img.shields.io/badge/python-3.9%2B-blue" alt="Python version">
+    <img src="https://img.shields.io/badge/python-3.10%2B-blue" alt="Python version">
     <a href="https://slymelab.github.io/deepslyme/"><img src="https://img.shields.io/badge/docs-latest-blue.svg" alt="Documentation"></a>
     <a href="https://github.com/slymelab/deepslyme/blob/main/LICENSE"><img src="https://img.shields.io/github/license/slymelab/deepslyme" alt="License"></a>
   </p>
@@ -24,7 +24,7 @@ The `Trainer` class in traditional deep learning frameworks is often a highly en
 
 ## Installation
 
-DeepSlyme requires **Python 3.9+**. You can install it directly via pip:
+DeepSlyme requires **Python 3.10+**. You can install it directly via pip:
 
 ```bash
 pip install deepslyme

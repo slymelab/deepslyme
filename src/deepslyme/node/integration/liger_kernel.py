@@ -13,15 +13,16 @@
 # limitations under the License.
 
 import logging
-from typing import Any, Optional
-from transformers import PreTrainedModel
+from typing import Any
+
 from slyme.context import Context
-from slyme.node import node, Auto
+from slyme.node import Auto, node
+from transformers import PreTrainedModel
 
 logger = logging.getLogger(__name__)
 
 
-def _apply_liger_kernel(model: Any, liger_kwargs: Optional[dict] = None) -> None:
+def _apply_liger_kernel(model: Any, liger_kwargs: dict | None = None) -> None:
     """
     Core logic to apply Liger Kernel patches to the model.
     Extracted to separate purely functional logic from framework context management.
@@ -67,8 +68,8 @@ def apply_liger_kernel(
     /,
     *,
     model: Auto[Any],
-    liger_kwargs: Auto[Optional[dict]] = None,
-) -> Context:
+    liger_kwargs: Auto[dict | None] = None,
+) -> None:
     """
     Apply Liger Kernel patches to the model for optimized operator performance
     (e.g., fused LayerNorm, fused CrossEntropy).
@@ -78,4 +79,3 @@ def apply_liger_kernel(
     Supports both standard HuggingFace PreTrainedModels and PEFT models.
     """
     _apply_liger_kernel(model=model, liger_kwargs=liger_kwargs)
-    return ctx
